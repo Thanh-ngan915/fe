@@ -13,23 +13,32 @@ function Login() {
         e.preventDefault();
         setError('');
 
-        // Gửi yêu cầu đăng nhập tới server qua WebSocket
         websocketService.connect().then(() => {
-            // register temporary listeners for login responses
             const onReLogin = (data) => {
                 console.log('Login response:', data);
-                if (data && (data.status === 'success' || data.event === 'RE_LOGIN' || data.status === 'ok')) {
+
+                // Logic check mở rộng
+                const isSuccess = data.status === 'success' || data.status === 'ok';
+                const isAlreadyLoggedIn = data.mes === 'You are already logged in';
+                const isReLogin = data.event === 'RE_LOGIN';
+
+                if (data && (isSuccess || isReLogin || isAlreadyLoggedIn)) {
+                    // Thành công
                     const code = data.data?.RE_LOGIN_CODE || null;
                     const userObj = { name: user, user: user, password: password, reLoginCode: code };
                     localStorage.setItem('isAuthenticated', 'true');
                     localStorage.setItem('currentUser', JSON.stringify(userObj));
-                    websocketService.off('RE_LOGIN');
-                    websocketService.off('LOGIN');
+
+                    // Cleanup đúng cách
+                    websocketService.off('RE_LOGIN', onReLogin);
+                    websocketService.off('LOGIN', onReLogin);
+
                     navigate('/chat');
                 } else {
+                    // Thất bại
                     setError(data.mes || 'Đăng nhập thất bại');
-                    websocketService.off('RE_LOGIN');
-                    websocketService.off('LOGIN');
+                    websocketService.off('RE_LOGIN', onReLogin);
+                    websocketService.off('LOGIN', onReLogin);
                 }
             };
 
@@ -51,13 +60,13 @@ function Login() {
                 <form onSubmit={handleSubmit}>
                     <div className="form-group">
                         <label>Tên đăng nhập:</label>
-                            <input
-                                type="text"
-                                value={user}
-                                onChange={(e) => setUser(e.target.value)}
-                                required
-                                placeholder="Nhập tên đăng nhập của bạn"
-                            />
+                        <input
+                            type="text"
+                            value={user}
+                            onChange={(e) => setUser(e.target.value)}
+                            required
+                            placeholder="Nhập tên đăng nhập của bạn"
+                        />
                     </div>
                     <div className="form-group">
                         <label>Mật khẩu:</label>
