@@ -1,9 +1,6 @@
 import React from 'react';
 import { extractName } from '../../utils/chatUtils';
 
-
-
-
 function ConversationsList({ conversations, selectedUser, onSelectUser }) {
   return (
     <div className="conversations-list">
