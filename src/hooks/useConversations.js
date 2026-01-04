@@ -1,114 +1,119 @@
-import { useEffect } from 'react';
-
-
-// commit của thanhngan push nhầm nhánh
+import { useEffect, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import websocketService from '../services/websocketService';
-import { 
-  setConversations, 
-  setRooms, 
-  setMessages,
-  addConversation 
+import {
+    setConversations,
+    setRooms,
+    setMessages,
+    addConversation
 } from '../redux/slices/chatSlice';
 import { parseConversationsFromResponse } from '../utils/chatUtils';
 
 const useConversations = (isAuthenticated, currentUser) => {
-  const dispatch = useDispatch();
+    const dispatch = useDispatch();
+    const searchTerm = useSelector(state => state.chat.searchTerm);
 
-  const searchTerm = useSelector(state => state.chat.searchTerm);
 
+    const searchRef = useRef(searchTerm);
 
     useEffect(() => {
-        if (isAuthenticated && currentUser) {
-            try {
-                const userName = currentUser.name || currentUser.user || currentUser.email;
-                console.log('Đã xác thực, đang lấy dữ liệu cho:', userName);
+        searchRef.current = searchTerm;
+    }, [searchTerm]);
 
+    useEffect(() => {
+        if (!isAuthenticated || !currentUser) return;
 
-                websocketService.send('GET_PEOPLE_CHAT_MES', {
-                    name: userName,
-                    page: 1,
-                });
+        const userName = currentUser.name || currentUser.user || currentUser.email;
+        console.log('🔄 Syncing data for:', userName);
 
+        // Lấy danh sách chat gần đây
+        websocketService.send('GET_PEOPLE_CHAT_MES', {
+            name: userName,
+            page: 1,
+        });
 
-                setTimeout(() => {
-                    websocketService.send('GET_USER_LIST', {});
-                }, 500);
+        const timer = setTimeout(() => {
+            websocketService.send('GET_USER_LIST', {});
+        }, 500);
 
-            } catch (err) {
-                console.warn('Lỗi khi gửi request:', err);
-            }
-        }
+        return () => clearTimeout(timer);
     }, [isAuthenticated, currentUser]);
 
+    // 3. EFFECT 2: Đăng ký lắng nghe sự kiện (Chỉ chạy 1 lần duy nhất khi mount)
+    useEffect(() => {
 
-  useEffect(() => {
+        const handlePeopleChatMes = (e) => {
+            // Lưu ý: Với EventTarget, dữ liệu nằm trong e.detail
+            const payload = e.detail;
+            const listData = payload?.data || [];
 
-    const handlePeopleChatMes = (data) => {
-      if (data.data && Array.isArray(data.data)) {
-        if (data.data.length === 0) {
-          const q = (searchTerm && searchTerm.trim()) || null;
-          if (q) {
-            console.log('Danh sách rỗng, đang kiểm tra user tồn tại:', q);
-            websocketService.send('CHECK_USER_EXIST', { user: q });
-          } else {
-            console.log('Danh sách rỗng, fallback sang GET_USER_LIST');
-            websocketService.send('GET_USER_LIST', {});
-          }
-          return;
-        }
+            if (!Array.isArray(listData) || listData.length === 0) {
+                const currentSearch = (searchRef.current && searchRef.current.trim()) || null;
 
-        const first = data.data[0];
-        const looksLikeMessage = typeof first === 'object' && ('mes' in first || 'from' in first || 'time' in first);
+                if (currentSearch) {
+                    console.log('🔍 List rỗng, check user exist:', currentSearch);
+                    websocketService.send('CHECK_USER_EXIST', { user: currentSearch });
+                } else {
+                    console.log('📂 List rỗng, fallback GET_USER_LIST');
+                    websocketService.send('GET_USER_LIST', {});
+                }
+                return;
+            }
 
-        if (looksLikeMessage) {
-          dispatch(setMessages(data.data));
-          return;
-        }
+            const firstItem = listData[0];
+            // Kiểm tra kỹ hơn cấu trúc tin nhắn
+            if (firstItem && typeof firstItem === 'object' && ('mes' in firstItem)) {
+                dispatch(setMessages(listData));
+                return;
+            }
 
-        const { people, rooms } = parseConversationsFromResponse(data.data);
-        dispatch(setConversations(people));
-        dispatch(setRooms(rooms));
-      }
-    };
+            const { people, rooms } = parseConversationsFromResponse(listData);
+            dispatch(setConversations(people));
+            dispatch(setRooms(rooms));
+        };
 
-      const handleUserList = (data) => {
-          try {
-              if (data.data && Array.isArray(data.data)) {
-                  const allUsers = data.data.map(u => u.name || u.user || u);
+        const handleUserList = (e) => {
+            try {
+                const payload = e.detail;
+                const listData = payload?.data || [];
 
-                  dispatch(setConversations(allUsers));
+                if (Array.isArray(listData)) {
+                    // Normalize data
+                    const allUsers = listData.map(u => u.name || u.user || u);
+                    dispatch(setConversations(allUsers));
+                }
+            } catch (err) {
+                console.warn('Error parsing USER_LIST', err);
+            }
+        };
 
+        const handleCheckUser = (e) => {
+            try {
+                const res = e.detail;
+                // Logic check status linh hoạt hơn
+                const isSuccess = res.status === 'success' || res.data?.status === 'success';
+                const userExists = res.data?.exists === true;
 
-              }
-          } catch (e) {
-              console.warn('Lỗi xử lý GET_USER_LIST', e);
-          }
-      };
-    const handleCheckUser = (res) => {
-      try {
-        const status = res?.status || res?.data?.status;
-        const exists = status === 'success' || res?.data?.exists === true;
-        
-        if (exists && res?.data?.user) {
-          const uname = res.data.user;
-          dispatch(addConversation(uname));
-        }
-      } catch (e) {
-        console.warn('Lỗi xử lý CHECK_USER', e);
-      }
-    };
+                if ((isSuccess || userExists) && res.data?.user) {
+                    dispatch(addConversation(res.data.user));
+                }
+            } catch (err) {
+                console.warn('Error parsing CHECK_USER', err);
+            }
+        };
 
-    websocketService.on('GET_PEOPLE_CHAT_MES', handlePeopleChatMes);
-    websocketService.on('GET_USER_LIST', handleUserList);
-    websocketService.on('CHECK_USER', handleCheckUser);
+        // Vì websocketService giờ là EventTarget, ta dùng cú pháp chuẩn DOM
+        websocketService.addEventListener('GET_PEOPLE_CHAT_MES', handlePeopleChatMes);
+        websocketService.addEventListener('GET_USER_LIST', handleUserList);
+        websocketService.addEventListener('CHECK_USER', handleCheckUser);
 
-    return () => {
-      websocketService.off('GET_PEOPLE_CHAT_MES', handlePeopleChatMes);
-      websocketService.off('GET_USER_LIST', handleUserList);
-      websocketService.off('CHECK_USER', handleCheckUser);
-    };
-  }, [dispatch, searchTerm]);
+        return () => {
+            websocketService.removeEventListener('GET_PEOPLE_CHAT_MES', handlePeopleChatMes);
+            websocketService.removeEventListener('GET_USER_LIST', handleUserList);
+            websocketService.removeEventListener('CHECK_USER', handleCheckUser);
+        };
+
+    }, [dispatch]); // Dependency array rất gọn, không chứa searchTerm
 };
 
 export default useConversations;

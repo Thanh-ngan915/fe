@@ -1,143 +1,140 @@
-class WebSocketService {
+/**
+ * WebSocketService - Single Class Version
+ * Kế thừa EventTarget để sử dụng cơ chế event native của trình duyệt.
+ */
+class WebSocketService extends EventTarget {
     constructor() {
-        this.ws = null;
+        super();
         this.url = 'wss://chat.longapp.site/chat/chat';
-        this.listeners = {};
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.ws = null;
 
-        this.attemptReconnect = this.attemptReconnect.bind(this);
-        this.connect = this.connect.bind(this);
-        // --------------------------------
+        this.retryCount = 0;
+        this.maxRetries = 5;
+        this.retryTimer = null;
+
+        this.chatEvents = new Set([
+            'REGISTER', 'LOGIN', 'RE_LOGIN', 'LOGOUT', 'CREATE_ROOM', 'JOIN_ROOM',
+            'GET_ROOM_CHAT_MES', 'GET_PEOPLE_CHAT_MES', 'SEND_CHAT', 'CHECK_USER',
+            'GET_USER_LIST', 'CHECK_USER_ONLINE', 'CHECK_USER_EXIST'
+        ]);
     }
 
-    connect() {
-        return new Promise((resolve, reject) => {
-            if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-                resolve();
-                return;
-            }
+    // --- PUBLIC METHODS ---
 
+    connect() {
+        if (this.ws && [WebSocket.OPEN, WebSocket.CONNECTING].includes(this.ws.readyState)) {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
             this.ws = new WebSocket(this.url);
 
             this.ws.onopen = () => {
-                console.log('✓ Kết nối WebSocket thành công!');
-                this.reconnectAttempts = 0;
+                console.log('✓ WS Connected');
+                this.retryCount = 0;
                 resolve();
-                // --- THÊM ĐOẠN NÀY: Báo ra ngoài là đã OPEN ---
-                if (this.listeners['OPEN']) {
-                    this.listeners['OPEN'].forEach(cb => cb());
-                }
+                this._dispatch('OPEN');
             };
 
             this.ws.onmessage = (event) => {
-                this.handleMessage(event);
+                this._handleMessage(event);
             };
 
             this.ws.onclose = () => {
-                console.log('Kết nối đã đóng. Đang gọi reconnect...');
-                // Lúc này 'this' chính là WebSocketService class
-                // --- THÊM ĐOẠN NÀY: Báo ra ngoài là đã CLOSE ---
-                if (this.listeners['CLOSE']) {
-                    this.listeners['CLOSE'].forEach(cb => cb());
-                }
-                this.attemptReconnect();
+                console.log('WS Closed. Reconnecting...');
+                this._dispatch('CLOSE');
+                this._attemptReconnect();
             };
 
             this.ws.onerror = (err) => {
                 console.error("WS Error", err);
-                // reject(err);
             };
         });
     }
 
-    handleMessage(event) {
+    send(action, data = {}) {
+        if (this.ws?.readyState !== WebSocket.OPEN) {
+            console.warn('⚠️ Cannot send. WS is not OPEN.');
+            return;
+        }
+
+        const payload = this._formatPayload(action, data);
+        console.log(`📤 Sending [${action}]:`, payload);
+        this.ws.send(JSON.stringify(payload));
+    }
+
+    disconnect() {
+        if (this.retryTimer) clearTimeout(this.retryTimer);
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.close();
+        }
+        this.ws = null;
+    }
+
+
+    _handleMessage(event) {
         try {
             const raw = JSON.parse(event.data);
+            if (!raw || raw.action === 'error') return;
 
-            if (raw.action === 'error') return;
+            let type = null;
+            let detail = raw;
 
-            let eventKey = null;
-            let normalized = raw;
-
-            // Logic chuẩn hóa message
-            if (raw && raw.action === 'onchat' && raw.data && typeof raw.data === 'object' && 'event' in raw.data) {
-                eventKey = raw.data.event;
-                // Flatten payload: prefer raw.data.data if present, otherwise use raw.data
-                const payload = (raw.data && typeof raw.data === 'object') ? (raw.data.data ?? raw.data) : raw.data;
-                normalized = {
-                    event: eventKey,
+            if (raw.action === 'onchat' && raw.data?.event) {
+                type = raw.data.event;
+                // Làm phẳng data (Flatten) để bên ngoài dễ dùng
+                const payload = (raw.data.data) ?? raw.data;
+                detail = {
+                    event: type,
                     status: raw.status || payload?.status || raw.data?.status,
                     mes: raw.mes || payload?.mes || raw.data?.mes,
                     data: payload?.data ?? payload
                 };
-            } else if (raw && (raw.event || raw.action)) {
-                eventKey = raw.event || raw.action;
+            }
+            else if (raw.event || raw.action) {
+                type = raw.event || raw.action;
             }
 
-            if (eventKey && this.listeners[eventKey]) {
-                this.listeners[eventKey].forEach(cb => {
-                    try { cb(normalized); } catch (e) { console.error(e); }
-                });
+            if (type) {
+                this._dispatch(type, detail);
             }
 
-            if (this.listeners['*']) {
-                this.listeners['*'].forEach(cb => cb(raw));
-            }
+            this._dispatch('*', raw);
+
         } catch (error) {
-            console.error('Lỗi parse message:', error);
+            console.error('Parse Message Error:', error);
         }
     }
 
-    attemptReconnect() {
-        // Hàm này PHẢI nằm trong class, ngang cấp với connect()
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            this.reconnectAttempts++;
-            console.log(`Thử kết nối lại... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-
-            setTimeout(() => {
-                this.connect().catch(err => console.log("Reconnect failed:", err));
-            }, 3000);
-        } else {
-            console.log("Đã thử kết nối lại quá số lần quy định.");
-        }
-    }
-
-    send(action, data = {}) {
-        if (!(this.ws && this.ws.readyState === WebSocket.OPEN)) return;
-
-        const chatEvents = new Set([
-            'REGISTER', 'LOGIN', 'RE_LOGIN', 'LOGOUT', 'CREATE_ROOM', 'JOIN_ROOM',
-            'GET_ROOM_CHAT_MES', 'GET_PEOPLE_CHAT_MES', 'SEND_CHAT', 'CHECK_USER', 'GET_USER_LIST',
-            'CHECK_USER_ONLINE', 'CHECK_USER_EXIST'
-        ]);
-
-        let messageToSend;
+    _formatPayload(action, data) {
         if (action === 'onchat') {
-            messageToSend = { action: 'onchat', data: data };
-        } else if (chatEvents.has(action)) {
-            messageToSend = { action: 'onchat', data: { event: action, data: data } };
-        } else {
-            messageToSend = { action: action, data: data };
+            return { action: 'onchat', data: data };
         }
 
-        console.log(`📤 Gửi:`, messageToSend);
-        this.ws.send(JSON.stringify(messageToSend));
+        if (this.chatEvents.has(action)) {
+            return { action: 'onchat', data: { event: action, data: data } };
+        }
+
+        // Mặc định
+        return { action: action, data: data };
     }
 
-    on(action, callback) {
-        if (!this.listeners[action]) this.listeners[action] = [];
-        this.listeners[action].push(callback);
+    _attemptReconnect() {
+        if (this.retryCount >= this.maxRetries) {
+            console.error('❌ Max retries reached. Stopping reconnect.');
+            return;
+        }
+
+        this.retryCount++;
+        const timeout = Math.min(1000 * (2 ** this.retryCount), 30000);
+
+        console.log(`🔄 Retry ${this.retryCount}/${this.maxRetries} in ${timeout/1000}s...`);
+        this.retryTimer = setTimeout(() => this.connect(), timeout);
     }
 
-    off(action, callback) {
-        if (!this.listeners[action]) return;
-        if (!callback) delete this.listeners[action];
-        else this.listeners[action] = this.listeners[action].filter(cb => cb !== callback);
-    }
-
-    disconnect() {
-        if (this.ws) this.ws.close();
+    _dispatch(type, detail) {
+        this.dispatchEvent(new CustomEvent(type, { detail }));
     }
 }
 
