@@ -14,10 +14,8 @@ const useMessages = () => {
       }
     };
     
-    // Đăng ký sự kiện lấy danh sách tin nhắn
     websocketService.on('GET_ROOM_CHAT_MES', handleMessages);
     
-    // Đăng ký sự kiện có tin nhắn mới tới
     websocketService.on('SEND_CHAT', (data) => {
       // Data trả về đôi khi nằm trong data.data hoặc trực tiếp trong data
       const msg = data.data || data; 
@@ -26,7 +24,6 @@ const useMessages = () => {
 
     return () => {
       websocketService.off('GET_ROOM_CHAT_MES', handleMessages);
-      // Không off SEND_CHAT để duy trì nhận tin realtime
     };
   }, [dispatch]);
 };
