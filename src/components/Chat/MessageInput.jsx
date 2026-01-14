@@ -11,7 +11,7 @@ function MessageInput({ newMessage, onNewMessageChange, onSendMessage }) {
         className="message-input"
       />
       <button type="submit" className="btn-send">
-        📤 Send
+         Send
       </button>
     </form>
   );
